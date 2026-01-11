@@ -46,6 +46,19 @@ def add_to_cart(product_id):
 # ---------------------------
 # View Cart
 # ---------------------------
+@shop_bp.before_app_request
+def load_cart_count():
+    g.cart_count = 0
+    if not has_request_context() or not hasattr(current_user, "is_authenticated"):
+        return  # Skip if no active request or user object missing
+
+    if current_user.is_authenticated:
+        cart = Cart.query.filter_by(user_id=current_user.id).first()
+        if cart:
+            g.cart_count = sum(item.quantity for item in cart.items)
+    else:
+        session_cart = session.get("cart", {})
+        g.cart_count = sum(session_cart.values())
 @shop_bp.route('/cart')
 def cart():
     products_in_cart = []
