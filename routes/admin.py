@@ -16,11 +16,7 @@ admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not current_user.is_authenticated or not getattr(current_user, "is_admin", False):
-            flash("Admin access required.", "danger")
-            return redirect(url_for("users.login"))
-        return f(*args, **kwargs)
-    return decorated_function
+        if not getattr(current_user, "is_authenticated", False) or not getattr(current_user, "is_admin", False):
 
 # ---------------------------
 # Admin Dashboard
