@@ -4,7 +4,7 @@ from models.product import Product
 from models.cart import Cart, CartItem
 from models.order import Order, OrderItem
 from extensions import db
-import requests  # move import to top
+import requests
 
 shop_bp = Blueprint('shop', __name__)
 
@@ -21,7 +21,7 @@ def index():
 # ---------------------------
 @shop_bp.route('/add_to_cart/<int:product_id>')
 def add_to_cart(product_id):
-    if current_user.is_authenticated:
+    if hasattr(current_user, "is_authenticated") and current_user.is_authenticated:
         cart = Cart.query.filter_by(user_id=current_user.id).first()
         if not cart:
             cart = Cart(user_id=current_user.id)
@@ -32,8 +32,7 @@ def add_to_cart(product_id):
         if item:
             item.quantity += 1
         else:
-            item = CartItem(cart_id=cart.id, product_id=product_id, quantity=1)
-            db.session.add(item)
+            db.session.add(CartItem(cart_id=cart.id, product_id=product_id, quantity=1))
         db.session.commit()
     else:
         cart = session.get("cart", {})
@@ -46,42 +45,23 @@ def add_to_cart(product_id):
 # ---------------------------
 # View Cart
 # ---------------------------
-@shop_bp.before_app_request
-def load_cart_count():
-    g.cart_count = 0
-    if not has_request_context() or not hasattr(current_user, "is_authenticated"):
-        return  # Skip if no active request or user object missing
-
-    if current_user.is_authenticated:
-        cart = Cart.query.filter_by(user_id=current_user.id).first()
-        if cart:
-            g.cart_count = sum(item.quantity for item in cart.items)
-    else:
-        session_cart = session.get("cart", {})
-        g.cart_count = sum(session_cart.values())
 @shop_bp.route('/cart')
 def cart():
     products_in_cart = []
     total = 0
 
-    if current_user.is_authenticated:
+    if hasattr(current_user, "is_authenticated") and current_user.is_authenticated:
         cart = Cart.query.filter_by(user_id=current_user.id).first()
         if cart:
             for item in cart.items:
-                products_in_cart.append({
-                    "product": item.product,
-                    "quantity": item.quantity
-                })
+                products_in_cart.append({"product": item.product, "quantity": item.quantity})
                 total += item.product.price * item.quantity
     else:
         session_cart = session.get("cart", {})
         for product_id, qty in session_cart.items():
-            product = Product.query.get(int(product_id))
+            product = db.session.get(Product, int(product_id))
             if product:
-                products_in_cart.append({
-                    "product": product,
-                    "quantity": qty
-                })
+                products_in_cart.append({"product": product, "quantity": qty})
                 total += product.price * qty
 
     return render_template("shop/cart.html", products=products_in_cart, total=total)
@@ -92,9 +72,8 @@ def cart():
 @shop_bp.before_app_request
 def load_cart_count():
     g.cart_count = 0
-    if not has_request_context():
-        return  # Skip if no active request
-
+    if not has_request_context() or not hasattr(current_user, "is_authenticated"):
+        return
     if current_user.is_authenticated:
         cart = Cart.query.filter_by(user_id=current_user.id).first()
         if cart:
@@ -136,13 +115,12 @@ def checkout():
     total = 0
     for item in cart.items:
         total += item.product.price * item.quantity
-        order_item = OrderItem(
+        db.session.add(OrderItem(
             order_id=order.id,
             product_id=item.product.id,
             quantity=item.quantity,
             price=item.product.price
-        )
-        db.session.add(order_item)
+        ))
         db.session.delete(item)
 
     order.total_amount = total
@@ -160,18 +138,20 @@ def orders():
     return render_template('shop/orders.html', orders=user_orders)
 
 # ---------------------------
-# Opay Payment
+# Opay Payment (Render Safe)
 # ---------------------------
 @shop_bp.route('/pay/<int:order_id>')
 @login_required
 def pay(order_id):
-    order = Order.query.get_or_404(order_id)
-
     merchant_id = current_app.config.get('OPAY_MERCHANT_ID')
     api_key = current_app.config.get('OPAY_API_KEY')
-
     if not merchant_id or not api_key:
-        flash("Payment configuration missing.", "danger")
+        flash("Payment temporarily disabled (missing config).", "warning")
+        return redirect(url_for('shop.orders'))
+
+    order = db.session.get(Order, order_id)
+    if not order:
+        flash("Order not found.", "danger")
         return redirect(url_for('shop.orders'))
 
     payload = {
@@ -182,33 +162,36 @@ def pay(order_id):
         "customer_email": current_user.email
     }
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     try:
         response = requests.post("https://api.opay.com/payment/initiate", json=payload, headers=headers)
         data = response.json()
-
         if data.get("status") == "success":
             return redirect(data["payment_url"])
-        else:
-            flash("Payment initialization failed.", "danger")
+        flash("Payment initialization failed.", "danger")
     except Exception as e:
         flash(f"Payment error: {str(e)}", "danger")
-
     return redirect(url_for('shop.orders'))
 
 # ---------------------------
-# Verify Payment (Opay Callback)
+# Verify Payment (Render Safe)
 # ---------------------------
 @shop_bp.route('/verify_payment/<int:order_id>')
 @login_required
 def verify_payment(order_id):
-    order = Order.query.get_or_404(order_id)
+    merchant_id = current_app.config.get('OPAY_MERCHANT_ID')
+    api_key = current_app.config.get('OPAY_API_KEY')
+    if not merchant_id or not api_key:
+        flash("Payment verification skipped (missing config).", "warning")
+        return redirect(url_for('shop.orders'))
 
-    # For now, mark order as paid for testing
+    order = db.session.get(Order, order_id)
+    if not order:
+        flash("Order not found.", "danger")
+        return redirect(url_for('shop.orders'))
+
+    # Mark as paid for testing
     order.status = "Paid"
     db.session.commit()
     flash("Payment successful!", "success")
